@@ -1,0 +1,8 @@
+# Tudo o que é essencial usa só a biblioteca padrão do Python: interface
+# com tkinter, XML com xml.etree, CSV com csv. Não há banco de dados.
+#
+# O PyMuPDF é necessário apenas para ler o texto dos PDFs (busca por
+# conteúdo), contar páginas de arquivos sem índice e gerar a miniatura de
+# pré-visualização. O main.py o instala sozinho na primeira execução, se
+# faltar; este arquivo serve para instalação manual ou offline.
+PyMuPDF>=1.24
