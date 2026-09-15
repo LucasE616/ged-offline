@@ -12,8 +12,10 @@ A economia vem daí naturalmente: só precisam ser abertos os PDFs dos documento
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Callable
 
+from . import datas
 from .catalogo import Catalogo, Documento
 from .texto import contem
 
@@ -25,10 +27,28 @@ class Criterios:
     escopo_indice: bool = True
     escopo_conteudo: bool = False
     filtros: dict[str, str] = field(default_factory=dict)
+    # Período sobre o campo de data do índice (Data de Pagto, Data Ass...)
+    indice_de: str = ""
+    indice_ate: str = ""
+    # Período sobre a data de criação do arquivo no disco
+    criacao_de: str = ""
+    criacao_ate: str = ""
 
     @property
     def termo_limpo(self) -> str:
         return self.termo.strip()
+
+    def periodo_indice(self) -> tuple[date | None, date | None]:
+        return (
+            datas.limite_periodo(self.indice_de, inicio=True),
+            datas.limite_periodo(self.indice_ate, inicio=False),
+        )
+
+    def periodo_criacao(self) -> tuple[date | None, date | None]:
+        return (
+            datas.limite_periodo(self.criacao_de, inicio=True),
+            datas.limite_periodo(self.criacao_ate, inicio=False),
+        )
 
     def descrever(self) -> list[str]:
         """Critérios em texto, para o cabeçalho do relatório."""
@@ -36,6 +56,16 @@ class Criterios:
         for campo, valor in self.filtros.items():
             if valor.strip():
                 linhas.append(f'{campo} contém "{valor.strip()}"')
+        for rotulo, (de, ate) in (
+            ("data do índice", self.periodo_indice()),
+            ("data de criação do arquivo", self.periodo_criacao()),
+        ):
+            if de and ate:
+                linhas.append(f"{rotulo} entre {datas.formatar(de)} e {datas.formatar(ate)}")
+            elif de:
+                linhas.append(f"{rotulo} a partir de {datas.formatar(de)}")
+            elif ate:
+                linhas.append(f"{rotulo} até {datas.formatar(ate)}")
         if self.termo_limpo:
             linhas.append(f'texto contém "{self.termo_limpo}"')
         return linhas or ["nenhum — todos os documentos do diretório"]
@@ -80,13 +110,58 @@ class Resultado:
         return sum(1 for d in self.documentos if not d.localizado)
 
 
-def _passa_filtros(documento: Documento, filtros: dict[str, str]) -> bool:
-    """Filtros por campo: todos precisam bater."""
-    for campo, valor in filtros.items():
+def _campo_casa(consulta: str, valor: str) -> bool:
+    """Compara um campo com o que foi digitado.
+
+    Tenta primeiro como data: assim procurar "29/11/2019" encontra o
+    registro gravado como "2019-11-29", e "11/2019" encontra o mês
+    inteiro. Quando a comparação por data não se aplica — porque o que foi
+    digitado não parece data, ou porque o campo não contém uma — volta a
+    ser busca por trecho de texto, como qualquer outro campo.
+    """
+    como_data = datas.casa_como_data(consulta, valor)
+    if como_data is not None:
+        return como_data
+    return contem(consulta, valor)
+
+
+def _dentro_do_periodo(alvo: date | None, de: date | None, ate: date | None) -> bool:
+    if de is None and ate is None:
+        return True
+    if alvo is None:
+        return False
+    if de is not None and alvo < de:
+        return False
+    if ate is not None and alvo > ate:
+        return False
+    return True
+
+
+def _passa_filtros(documento: Documento, criterios: Criterios, campos_data: list[str]) -> bool:
+    """Filtros por campo e por período: todos precisam bater."""
+    for campo, valor in criterios.filtros.items():
         if not valor.strip():
             continue
-        if not contem(valor, documento.valor(campo)):
+        if not _campo_casa(valor, documento.valor(campo)):
             return False
+
+    de_indice, ate_indice = criterios.periodo_indice()
+    if de_indice or ate_indice:
+        # Basta um dos campos de data do documento cair no período.
+        candidatas = [
+            datas.interpretar(documento.valor(campo))
+            for campo in campos_data
+        ]
+        candidatas = [d for d in candidatas if d is not None]
+        if not any(_dentro_do_periodo(d, de_indice, ate_indice) for d in candidatas):
+            return False
+
+    de_criacao, ate_criacao = criterios.periodo_criacao()
+    if de_criacao or ate_criacao:
+        criada = documento.data_criacao.date() if documento.data_criacao else None
+        if not _dentro_do_periodo(criada, de_criacao, ate_criacao):
+            return False
+
     return True
 
 
@@ -101,8 +176,12 @@ def _casa_metadados(documento: Documento, criterios: Criterios) -> bool:
 
 
 def filtrados(catalogo: Catalogo, criterios: Criterios) -> list[Documento]:
-    """Só os filtros por campo, sem o termo livre."""
-    return [d for d in catalogo.documentos if _passa_filtros(d, criterios.filtros)]
+    """Só os filtros por campo e por período, sem o termo livre."""
+    return [
+        d
+        for d in catalogo.documentos
+        if _passa_filtros(d, criterios, catalogo.campos_data)
+    ]
 
 
 def a_ler_para_conteudo(catalogo: Catalogo, criterios: Criterios, cache=None) -> list[Documento]:

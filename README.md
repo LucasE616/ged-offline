@@ -16,12 +16,38 @@ Na primeira execução o programa instala sozinho o `PyMuPDF`, usado para ler o 
 
 ## Como usar
 
-1. **Escolher...** e selecione a pasta do acervo (normalmente a pasta de um exercício). Deixe *Incluir subpastas* marcado para varrer a árvore inteira.
+1. **Escolher...** e selecione a pasta do acervo (normalmente a pasta de um exercício). Deixe *Subpastas* marcado para varrer a árvore inteira.
 2. O programa lê o diretório em alguns segundos e monta os campos de busca com os índices que encontrou nos XML daquela pasta.
-3. Busque por texto livre, pelos campos de índice, ou pelos dois juntos.
-4. **Exportar TXT** ou **Exportar CSV** para levar o resultado embora.
+3. Se houver mais de um tipo de documento na pasta, ele pergunta qual você quer consultar (veja *Tipo de documento* abaixo).
+4. Busque por texto livre, pelos campos de índice, por período, ou por tudo junto.
+5. **Exportar TXT** ou **Exportar CSV** para levar o resultado embora.
 
-Duplo clique numa linha abre o PDF no visualizador padrão do Windows.
+Duplo clique numa linha abre o PDF no visualizador padrão do Windows. O botão direito — ou os botões no painel lateral — também oferece **Abrir pasta do arquivo**, que abre o Explorer já com o documento selecionado, útil quando você precisa copiar o arquivo ou ver o que mais existe naquela pasta.
+
+## Tipo de documento
+
+Uma pasta de exercício costuma ter um tipo só, mas apontar para a raiz de um acervo mistura despesas com licitações — e os vocabulários se somam, enchendo a busca de campos que não valem para o que se procura. Quando isso acontece, o programa abre um diálogo mostrando os tipos encontrados, com quantos documentos, quantas páginas e quais índices cada um tem. Escolher um tipo reduz os campos de busca e as colunas aos índices daquele tipo; *Todos os tipos* mostra tudo somado. O botão **Tipo:** no topo permite trocar a qualquer momento.
+
+O tipo é deduzido do nome do arquivo (`despesa_…`, `licitacao_…`) e, quando o nome não diz, do campo *Título* do próprio índice — que nos exports do acervo traz exatamente isso.
+
+## Datas e períodos
+
+Os campos de data são reconhecidos pelo **conteúdo**, não pelo nome: o programa olha os valores e marca como data o campo que contém datas, seja ele `Data de Pagto`, `Data Ass` ou `Data`.
+
+Isso resolve um problema real do acervo: o mesmo arquivo de índice grava `2019-11-29` na maioria dos registros e `01-11-2019` em outros, e o usuário digita `29/11/2019`, que não é nenhum dos dois. Buscar por qualquer um desses formatos encontra os outros. A busca também aceita datas incompletas:
+
+| Você digita | Encontra |
+|---|---|
+| `2019` | o ano inteiro |
+| `11/2019` | o mês inteiro |
+| `29/11/2019` | o dia exato |
+
+Os mesmos formatos valem nos dois filtros de **período**:
+
+- **Período do índice** — sobre a data que está no XML (pagamento, assinatura, publicação)
+- **Criação do arquivo** — sobre a data em que o PDF foi criado no disco
+
+Digitar `de 2019 até 2019` pega o ano inteiro, não um dia só. Campos que não são datas continuam funcionando como texto comum: digitar `11` num campo procura o trecho "11", e não o mês de novembro.
 
 ## Os três escopos de busca
 
@@ -63,6 +89,7 @@ python main.py --buscar "D:\ACERVO\2019" --filtro "Favorecido=CEMIG" --txt relat
 ```
 
 Opções: `--termo`, `--filtro CAMPO=VALOR` (repetível), `--conteudo`,
+`--tipo`, `--indice-de`, `--indice-ate`, `--criacao-de`, `--criacao-ate`,
 `--sem-subpastas`, `--csv`, `--txt`, `--limite`.
 
 ## Exportação
@@ -89,10 +116,11 @@ A busca ignora acentuação e caixa nos dois lados: `municipio` encontra `MUNIC�
 ```
 main.py              ponto de entrada, instalação de dependências e CLI
 ged/
-  catalogo.py        varredura do diretório e catálogo em memória
+  catalogo.py        varredura, catálogo em memória e agrupamento por tipo
   xml_parser.py      leitura tolerante dos índices XML
   nomes.py           metadados do nome do arquivo e do caminho
-  busca.py           filtros por campo e texto livre nos três escopos
+  datas.py           leitura de datas em qualquer formato e períodos
+  busca.py           filtros por campo, período e texto livre nos três escopos
   conteudo.py        texto e páginas dos PDFs, com cache de sessão
   exportador.py      relatórios TXT e CSV
   texto.py           normalização para comparação sem acento
@@ -100,8 +128,11 @@ ged/
 tests/selftest.py    testes rápidos: python main.py --selftest
 ```
 
+A janela se ajusta à tela disponível e a área de filtros rola dentro de uma altura fixa, para que a tabela de resultados não seja empurrada para fora num notebook, por mais campos de índice que o acervo tenha.
+
 ## Limitações desta versão
 
-- Perfis de busca salvos (rótulos amigáveis, campos numéricos com faixa e soma, filtro por período de datas) ainda não existem: todo campo é tratado como texto.
+- Perfis de busca salvos (rótulos amigáveis, faixa numérica e somatório de valores) ainda não existem: fora as datas, todo campo é tratado como texto.
 - Sem OCR — PDFs que são só imagem não têm o que ser procurado dentro.
 - A varredura é refeita a cada abertura do programa, já que nada é guardado. Numa pasta de 2.500 documentos isso leva poucos segundos.
+- O filtro por data de criação só alcança documentos cujo PDF está no diretório; registros de índice sem arquivo ficam de fora, porque não há data para comparar.

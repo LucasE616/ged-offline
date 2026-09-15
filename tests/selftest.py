@@ -3,8 +3,35 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ged import nomes, xml_parser
+from ged import datas, nomes, xml_parser
 from ged.texto import contem, normalizar
+
+# O acervo grava a mesma informação em formatos diferentes, e o usuário
+# digita num terceiro. Todos estes precisam se encontrar.
+CASOS_DATA = [
+    ("29/11/2019", "2019-11-29", True),
+    ("2019-11-29", "2019-11-29", True),
+    ("29-11-2019", "2019-11-29", True),
+    ("29/11/2019", "29-11-2019", True),
+    ("11/2019", "2019-11-29", True),
+    ("2019", "2019-11-29", True),
+    ("2019", "01-11-2019", True),
+    ("12/2019", "2019-11-29", False),
+    ("29/11/2019", "2019-11-28", False),
+    ("2020", "2019-11-29", False),
+]
+
+CASOS_PERIODO = [
+    ("2019", "2019", "2019-06-15", True),
+    ("01/11/2019", "30/11/2019", "2019-11-29", True),
+    ("01/11/2019", "30/11/2019", "2019-12-01", False),
+    ("11/2019", "11/2019", "2019-11-30", True),
+    ("", "2019", "2018-05-04", True),
+    ("2020", "", "2019-11-29", False),
+]
+
+# O que NÃO pode ser confundido com data, para não estragar a busca por texto
+NAO_SAO_DATAS = ["101.0", "1100.07", "1.0", "CEMIG", "12030", "11"]
 
 XMLS_EXEMPLO = [
     Path(r"C:\Users\Lucas Emanuel\Downloads\xml despesa"),
@@ -36,6 +63,31 @@ def rodar() -> None:
         certo = contem(entrada, alvo)
         tudo_certo &= certo
         print(f"{_ok(certo)}: '{entrada}' encontra '{alvo}'")
+
+    print("\n== Datas em formatos diferentes ==")
+    for consulta, valor, esperado in CASOS_DATA:
+        obtido = datas.casa_como_data(consulta, valor)
+        certo = obtido is esperado
+        tudo_certo &= certo
+        print(f"{_ok(certo)}: buscar '{consulta}' em '{valor}' -> {obtido}")
+
+    print("\n== Período ==")
+    for de, ate, valor, esperado in CASOS_PERIODO:
+        alvo = datas.interpretar(valor)
+        limite_de = datas.limite_periodo(de, inicio=True)
+        limite_ate = datas.limite_periodo(ate, inicio=False)
+        dentro = (limite_de is None or alvo >= limite_de) and (
+            limite_ate is None or alvo <= limite_ate
+        )
+        certo = dentro is esperado
+        tudo_certo &= certo
+        print(f"{_ok(certo)}: {valor} entre '{de or '—'}' e '{ate or '—'}' -> {dentro}")
+
+    print("\n== Não podem virar data ==")
+    for valor in NAO_SAO_DATAS:
+        certo = datas.interpretar_consulta(valor) is None or datas.interpretar(valor) is None
+        tudo_certo &= certo
+        print(f"{_ok(certo)}: '{valor}' não é tratado como data")
 
     print("\n== Nome do arquivo ==")
     for arquivo, tipo_esperado, campos_esperados in CASOS_NOME:

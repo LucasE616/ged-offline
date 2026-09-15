@@ -21,11 +21,14 @@ def _agora() -> str:
 
 def _linhas_cabecalho(catalogo: Catalogo, criterios: Criterios) -> list[tuple[str, str]]:
     escopo_pasta = "incluindo subpastas" if catalogo.incluir_subpastas else "somente esta pasta"
-    return [
+    linhas = [
         ("Diretório", f"{catalogo.raiz}  ({escopo_pasta})"),
         ("Emitido em", _agora()),
-        ("Escopo", criterios.escopos_descritos()),
     ]
+    if catalogo.tipo_ativo:
+        linhas.append(("Tipo", catalogo.tipo_ativo))
+    linhas.append(("Escopo", criterios.escopos_descritos()))
+    return linhas
 
 
 def exportar_csv(

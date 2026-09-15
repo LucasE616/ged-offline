@@ -1,0 +1,30 @@
+# Bytecode gerado pelo Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Relatórios exportados pelo próprio programa
+# (o nome padrão sugerido na janela de salvar é busca_ged.txt / .csv)
+busca_ged*.txt
+busca_ged*.csv
+relatorio*.txt
+relatorio*.csv
+
+# Empacotamento, caso um dia vire .exe
+build/
+dist/
+*.spec
+
+# Editores
+.vscode/
+.idea/
+*.swp
+
+# Windows
+Thumbs.db
+desktop.ini

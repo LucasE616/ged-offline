@@ -7,17 +7,42 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterator
 
-from . import nomes, xml_parser
-from .texto import contem
+from . import datas, nomes, xml_parser
+from .texto import contem, normalizar
 
 EXTENSOES_PDF = {".pdf", ".pdfa"}
 EXTENSOES_XML = {".xml"}
 
 ORIGEM_XML = "índice"
 ORIGEM_NOME = "nome"
+
+SEM_TIPO = "(sem tipo identificado)"
+
+# Quantos valores olhar por campo ao decidir se ele é de data.
+AMOSTRA_DATA = 200
+
+
+def _data_de_criacao(caminho: Path) -> datetime | None:
+    """Data de criação do arquivo.
+
+    No Windows `st_ctime` é de fato a criação; em outros sistemas usamos
+    `st_birthtime` quando existe e caímos na modificação quando não.
+    """
+    try:
+        info = caminho.stat()
+    except OSError:
+        return None
+    bruto = getattr(info, "st_birthtime", None)
+    if bruto is None:
+        bruto = info.st_ctime if os.name == "nt" else info.st_mtime
+    try:
+        return datetime.fromtimestamp(bruto)
+    except (OSError, OverflowError, ValueError):
+        return None
 
 
 @dataclass
@@ -32,6 +57,7 @@ class Documento:
     xml_origem: str = ""
     paginas: int | None = None
     tamanho: int = 0
+    data_criacao: datetime | None = None
 
     @property
     def localizado(self) -> bool:
@@ -43,6 +69,20 @@ class Documento:
     def texto_indexado(self) -> str:
         """Todos os valores de índice juntos, para a busca por texto livre."""
         return " ".join(self.campos.values())
+
+    def rotulo_tipo(self) -> str:
+        """Como este documento se apresenta na escolha de tipo.
+
+        Usa o tipo deduzido do nome do arquivo; se não houver, recorre ao
+        campo "Título" do próprio índice, que nos exports do acervo traz
+        exatamente isso ("Despesa", "PREI").
+        """
+        if self.tipo:
+            return self.tipo[:1].upper() + self.tipo[1:]
+        for nome_campo, valor in self.campos.items():
+            if normalizar(nome_campo) == "titulo" and valor.strip():
+                return valor.strip()
+        return SEM_TIPO
 
 
 @dataclass
@@ -61,6 +101,11 @@ class Catalogo:
     incluir_subpastas: bool = True
     documentos: list[Documento] = field(default_factory=list)
     vocabulario: list[str] = field(default_factory=list)
+    # Campos do vocabulário cujos valores são datas — descobertos olhando
+    # o conteúdo, já que o nome do campo varia de acervo para acervo
+    # ("Data de Pagto", "Data Ass", "Data").
+    campos_data: list[str] = field(default_factory=list)
+    tipo_ativo: str = ""
     xmls_lidos: int = 0
     xmls_tolerantes: int = 0
     pdfs_encontrados: int = 0
@@ -181,6 +226,7 @@ def varrer(
                     xml_origem=str(xml_path),
                     paginas=registro.paginas,
                     tamanho=caminho_pdf.stat().st_size if caminho_pdf else 0,
+                    data_criacao=_data_de_criacao(caminho_pdf) if caminho_pdf else None,
                 )
             )
 
@@ -201,13 +247,87 @@ def varrer(
                 tipo=tipo,
                 paginas=None,
                 tamanho=caminho_pdf.stat().st_size,
+                data_criacao=_data_de_criacao(caminho_pdf),
             )
         )
 
     catalogo.vocabulario = vocabulario
+    catalogo.campos_data = detectar_campos_de_data(catalogo)
     if progresso:
         progresso(Progresso("concluido", 1, 1, "Concluído"))
     return catalogo
+
+
+def detectar_campos_de_data(catalogo: Catalogo) -> list[str]:
+    """Quais campos do vocabulário contêm datas, julgando pelos valores."""
+    encontrados: list[str] = []
+    for campo in catalogo.vocabulario:
+        amostra: list[str] = []
+        for documento in catalogo.documentos:
+            valor = documento.valor(campo)
+            if valor and valor.strip():
+                amostra.append(valor)
+            if len(amostra) >= AMOSTRA_DATA:
+                break
+        if datas.parece_campo_de_data(amostra):
+            encontrados.append(campo)
+    return encontrados
+
+
+@dataclass
+class GrupoTipo:
+    """Um tipo de documento encontrado no diretório."""
+
+    rotulo: str
+    documentos: list[Documento] = field(default_factory=list)
+    vocabulario: list[str] = field(default_factory=list)
+
+    @property
+    def total_documentos(self) -> int:
+        return len(self.documentos)
+
+    @property
+    def total_paginas(self) -> int:
+        return sum(d.paginas or 0 for d in self.documentos)
+
+
+def agrupar_por_tipo(catalogo: Catalogo) -> list[GrupoTipo]:
+    """Separa o catálogo pelos tipos de documento presentes.
+
+    Uma pasta costuma ter um tipo só, mas apontar para a raiz de um acervo
+    mistura despesas com licitações — e os vocabulários se somam, enchendo
+    a busca de campos que não valem para o que se está procurando. Este
+    agrupamento é o que permite escolher um tipo e trabalhar só com os
+    índices dele.
+    """
+    grupos: dict[str, GrupoTipo] = {}
+    for documento in catalogo.documentos:
+        rotulo = documento.rotulo_tipo()
+        grupo = grupos.setdefault(rotulo, GrupoTipo(rotulo=rotulo))
+        grupo.documentos.append(documento)
+
+    for grupo in grupos.values():
+        presentes = {c for d in grupo.documentos for c, v in d.campos.items() if v.strip()}
+        # Mantém a ordem do vocabulário geral, para as colunas não dançarem
+        grupo.vocabulario = [c for c in catalogo.vocabulario if c in presentes]
+
+    return sorted(grupos.values(), key=lambda g: (-g.total_documentos, g.rotulo))
+
+
+def subcatalogo(catalogo: Catalogo, grupo: GrupoTipo) -> Catalogo:
+    """Uma visão do catálogo restrita a um tipo, com o vocabulário dele."""
+    recorte = Catalogo(
+        raiz=catalogo.raiz,
+        incluir_subpastas=catalogo.incluir_subpastas,
+        documentos=list(grupo.documentos),
+        vocabulario=list(grupo.vocabulario),
+        tipo_ativo=grupo.rotulo,
+        xmls_lidos=catalogo.xmls_lidos,
+        xmls_tolerantes=catalogo.xmls_tolerantes,
+        pdfs_encontrados=catalogo.pdfs_encontrados,
+    )
+    recorte.campos_data = [c for c in catalogo.campos_data if c in recorte.vocabulario]
+    return recorte
 
 
 def _completar(campos: dict[str, str], extras: dict[str, str], vocabulario: list[str]) -> None:

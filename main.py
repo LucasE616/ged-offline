@@ -55,10 +55,33 @@ def _cli(args: argparse.Namespace) -> None:
     )
     print(f"  Campos de índice descobertos: {', '.join(catalogo.vocabulario) or '(nenhum)'}")
 
+    if catalogo.campos_data:
+        print(f"  Campos de data reconhecidos: {', '.join(catalogo.campos_data)}")
+
+    grupos = cat.agrupar_por_tipo(catalogo)
+    if args.tipo:
+        escolhido = next(
+            (g for g in grupos if g.rotulo.lower() == args.tipo.lower()), None
+        )
+        if escolhido is None:
+            print(f"\nTipo '{args.tipo}' não encontrado. Disponíveis: "
+                  + ", ".join(g.rotulo for g in grupos))
+            return
+        catalogo = cat.subcatalogo(catalogo, escolhido)
+        print(f"  Tipo selecionado: {escolhido.rotulo} ({len(catalogo.vocabulario)} índices)")
+    elif len(grupos) > 1:
+        print("  Tipos presentes: " + ", ".join(
+            f"{g.rotulo} ({g.total_documentos})" for g in grupos
+        ) + "  — use --tipo para restringir")
+
     criterios = Criterios(
         termo=args.termo or "",
         escopo_conteudo=args.conteudo,
         filtros=dict(par.split("=", 1) for par in args.filtro or []),
+        indice_de=args.indice_de or "",
+        indice_ate=args.indice_ate or "",
+        criacao_de=args.criacao_de or "",
+        criacao_ate=args.criacao_ate or "",
     )
     cache = cont.CacheConteudo() if args.conteudo else None
     resultado = buscar(catalogo, criterios, cache=cache)
@@ -86,6 +109,11 @@ def main() -> None:
     parser.add_argument("--termo", help="Texto livre a procurar.")
     parser.add_argument("--filtro", action="append", metavar="CAMPO=VALOR", help="Filtro por campo de índice (repetível).")
     parser.add_argument("--conteudo", action="store_true", help="Procurar também dentro do texto dos PDFs.")
+    parser.add_argument("--tipo", help="Restringir a um tipo de documento (ex.: Despesa).")
+    parser.add_argument("--indice-de", help="Início do período sobre a data do índice (2019, 11/2019, 29/11/2019).")
+    parser.add_argument("--indice-ate", help="Fim do período sobre a data do índice.")
+    parser.add_argument("--criacao-de", help="Início do período sobre a data de criação do arquivo.")
+    parser.add_argument("--criacao-ate", help="Fim do período sobre a data de criação do arquivo.")
     parser.add_argument("--sem-subpastas", action="store_true", help="Não descer nas subpastas.")
     parser.add_argument("--csv", metavar="ARQUIVO", help="Exportar o resultado em CSV.")
     parser.add_argument("--txt", metavar="ARQUIVO", help="Exportar o resultado em TXT.")
