@@ -89,6 +89,26 @@ def rodar() -> None:
         tudo_certo &= certo
         print(f"{_ok(certo)}: '{valor}' não é tratado como data")
 
+    print("\n== Classificação nos tipos principais ==")
+    from ged.catalogo import Documento, classificar
+
+    raiz = Path(r"C:\Usuarios\Despesas da casa\ACERVO")
+    casos_tipo = [
+        ("pelo nome do arquivo", Documento(tipo="licitacao"), "licitacao"),
+        ("pelo Título do índice", Documento(campos={"Título": "Despesa"}), "despesa"),
+        ("Título 'Lei Ordinária'", Documento(campos={"Titulo": "Lei Ordinária"}), "legislacao"),
+        ("'Leilão' não é lei", Documento(campos={"Titulo": "Leilão 03/2019"}), "outro"),
+        ("pela pasta LEIS_2019", Documento(caminho=raiz / "LEIS_2019" / "x.pdf"), "legislacao"),
+        ("pasta mais próxima vence",
+         Documento(caminho=raiz / "DESPESAS" / "licitacoes_anexas" / "x.pdf"), "licitacao"),
+        ("pasta acima da raiz não conta", Documento(caminho=raiz / "2019" / "x.pdf"), "outro"),
+    ]
+    for descricao, documento, esperado in casos_tipo:
+        obtido = classificar(documento, raiz)
+        certo = obtido == esperado
+        tudo_certo &= certo
+        print(f"{_ok(certo)}: {descricao} -> {obtido}")
+
     print("\n== Nome do arquivo ==")
     for arquivo, tipo_esperado, campos_esperados in CASOS_NOME:
         tipo, campos = nomes.do_nome(arquivo)

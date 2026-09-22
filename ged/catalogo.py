@@ -6,6 +6,7 @@ lista os arquivos, lê os índices XML e liga um ao outro pelo nome do arquivo. 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +21,25 @@ EXTENSOES_XML = {".xml"}
 ORIGEM_XML = "índice"
 ORIGEM_NOME = "nome"
 
-SEM_TIPO = "(sem tipo identificado)"
+# Os três tipos documentais principais do acervo, na ordem em que aparecem
+# para o usuário. Tudo que não se encaixa neles é "outro tipo".
+TIPOS_PRINCIPAIS: list[tuple[str, str]] = [
+    ("despesa", "Despesas"),
+    ("licitacao", "Licitações"),
+    ("legislacao", "Legislações"),
+]
+TIPO_OUTRO = "outro"
+ROTULO_OUTRO = "Outro tipo de documento"
+
+# Palavras que denunciam o tipo quando o nome do arquivo não diz — seja no
+# campo "Título" do índice, seja no nome das pastas. As curtas ("lei") são
+# exigidas como palavra inteira, para "leilão", que é modalidade de
+# licitação, não virar legislação.
+_PISTAS_TIPO: list[tuple[str, re.Pattern[str]]] = [
+    ("despesa", re.compile(r"despesa")),
+    ("licitacao", re.compile(r"licitac")),
+    ("legislacao", re.compile(r"legislac|\bleis?\b|decreto|portaria|resoluc")),
+]
 
 # Quantos valores olhar por campo ao decidir se ele é de data.
 AMOSTRA_DATA = 200
@@ -70,19 +89,52 @@ class Documento:
         """Todos os valores de índice juntos, para a busca por texto livre."""
         return " ".join(self.campos.values())
 
-    def rotulo_tipo(self) -> str:
-        """Como este documento se apresenta na escolha de tipo.
-
-        Usa o tipo deduzido do nome do arquivo; se não houver, recorre ao
-        campo "Título" do próprio índice, que nos exports do acervo traz
-        exatamente isso ("Despesa", "PREI").
-        """
-        if self.tipo:
-            return self.tipo[:1].upper() + self.tipo[1:]
+    def titulo(self) -> str:
         for nome_campo, valor in self.campos.items():
             if normalizar(nome_campo) == "titulo" and valor.strip():
                 return valor.strip()
-        return SEM_TIPO
+        return ""
+
+
+def _tipo_por_texto(texto: str) -> str:
+    # "_" e "-" contam como espaço, senão "LEIS_2019" não seria palavra inteira
+    limpo = re.sub(r"[_\-.]+", " ", normalizar(texto))
+    for chave, pista in _PISTAS_TIPO:
+        if pista.search(limpo):
+            return chave
+    return ""
+
+
+def classificar(documento: Documento, raiz: Path) -> str:
+    """Enquadra o documento num dos três tipos principais, ou em "outro".
+
+    As pistas são tentadas da mais específica para a mais genérica: o
+    padrão do nome do arquivo, depois o campo "Título" do índice, depois
+    o nome das pastas entre o documento e o diretório escolhido — da mais
+    próxima para a mais distante. Pastas acima do diretório escolhido não
+    contam: "C:\\Usuários\\Despesas da casa\\..." não diz nada sobre o acervo.
+    """
+    chaves = {chave for chave, _ in TIPOS_PRINCIPAIS}
+    if documento.tipo in chaves:
+        return documento.tipo
+
+    pelo_titulo = _tipo_por_texto(documento.titulo())
+    if pelo_titulo:
+        return pelo_titulo
+
+    for origem in (documento.caminho, documento.xml_origem):
+        if not origem:
+            continue
+        try:
+            relativo = Path(origem).parent.relative_to(raiz)
+        except ValueError:
+            continue
+        for pasta in reversed(relativo.parts):
+            pela_pasta = _tipo_por_texto(pasta)
+            if pela_pasta:
+                return pela_pasta
+
+    return TIPO_OUTRO
 
 
 @dataclass
@@ -106,6 +158,9 @@ class Catalogo:
     # ("Data de Pagto", "Data Ass", "Data").
     campos_data: list[str] = field(default_factory=list)
     tipo_ativo: str = ""
+    # Preenchido só em "outro tipo de documento": os índices que o usuário
+    # escolheu buscar, que também definem quais documentos aparecem.
+    indices_escolhidos: list[str] = field(default_factory=list)
     xmls_lidos: int = 0
     xmls_tolerantes: int = 0
     pdfs_encontrados: int = 0
@@ -276,8 +331,9 @@ def detectar_campos_de_data(catalogo: Catalogo) -> list[str]:
 
 @dataclass
 class GrupoTipo:
-    """Um tipo de documento encontrado no diretório."""
+    """Um dos três tipos principais, com o que foi encontrado dele na pasta."""
 
+    chave: str
     rotulo: str
     documentos: list[Documento] = field(default_factory=list)
     vocabulario: list[str] = field(default_factory=list)
@@ -291,42 +347,89 @@ class GrupoTipo:
         return sum(d.paginas or 0 for d in self.documentos)
 
 
-def agrupar_por_tipo(catalogo: Catalogo) -> list[GrupoTipo]:
-    """Separa o catálogo pelos tipos de documento presentes.
+def _vocabulario_de(documentos: list[Documento], ordem: list[str]) -> list[str]:
+    presentes = {c for d in documentos for c, v in d.campos.items() if v.strip()}
+    # Mantém a ordem do vocabulário geral, para as colunas não dançarem
+    return [c for c in ordem if c in presentes]
 
-    Uma pasta costuma ter um tipo só, mas apontar para a raiz de um acervo
-    mistura despesas com licitações — e os vocabulários se somam, enchendo
-    a busca de campos que não valem para o que se está procurando. Este
-    agrupamento é o que permite escolher um tipo e trabalhar só com os
-    índices dele.
+
+def agrupar_por_tipo(catalogo: Catalogo) -> tuple[list[GrupoTipo], int]:
+    """Distribui o catálogo entre os três tipos principais.
+
+    Devolve sempre os três grupos, mesmo vazios — a tela de escolha mostra
+    os três e diz quantos documentos de cada um existem na pasta —, e a
+    quantidade de documentos que não se encaixou em nenhum deles.
     """
-    grupos: dict[str, GrupoTipo] = {}
+    grupos = {chave: GrupoTipo(chave=chave, rotulo=rotulo) for chave, rotulo in TIPOS_PRINCIPAIS}
+    sem_tipo = 0
     for documento in catalogo.documentos:
-        rotulo = documento.rotulo_tipo()
-        grupo = grupos.setdefault(rotulo, GrupoTipo(rotulo=rotulo))
-        grupo.documentos.append(documento)
-
+        chave = classificar(documento, catalogo.raiz)
+        if chave in grupos:
+            grupos[chave].documentos.append(documento)
+        else:
+            sem_tipo += 1
     for grupo in grupos.values():
-        presentes = {c for d in grupo.documentos for c, v in d.campos.items() if v.strip()}
-        # Mantém a ordem do vocabulário geral, para as colunas não dançarem
-        grupo.vocabulario = [c for c in catalogo.vocabulario if c in presentes]
-
-    return sorted(grupos.values(), key=lambda g: (-g.total_documentos, g.rotulo))
+        grupo.vocabulario = _vocabulario_de(grupo.documentos, catalogo.vocabulario)
+    return [grupos[chave] for chave, _ in TIPOS_PRINCIPAIS], sem_tipo
 
 
-def subcatalogo(catalogo: Catalogo, grupo: GrupoTipo) -> Catalogo:
-    """Uma visão do catálogo restrita a um tipo, com o vocabulário dele."""
+def contagem_por_indice(catalogo: Catalogo) -> dict[str, int]:
+    """Em quantos documentos cada índice aparece preenchido.
+
+    Ajuda a escolher índices em "outro tipo": um campo preenchido em três
+    documentos de dois mil raramente é o que se quer buscar.
+    """
+    contagem = {campo: 0 for campo in catalogo.vocabulario}
+    for documento in catalogo.documentos:
+        for campo, valor in documento.campos.items():
+            if valor.strip() and campo in contagem:
+                contagem[campo] += 1
+    return contagem
+
+
+def _recorte(catalogo: Catalogo, documentos: list[Documento], vocabulario: list[str]) -> Catalogo:
     recorte = Catalogo(
         raiz=catalogo.raiz,
         incluir_subpastas=catalogo.incluir_subpastas,
-        documentos=list(grupo.documentos),
-        vocabulario=list(grupo.vocabulario),
-        tipo_ativo=grupo.rotulo,
+        documentos=list(documentos),
+        vocabulario=list(vocabulario),
         xmls_lidos=catalogo.xmls_lidos,
         xmls_tolerantes=catalogo.xmls_tolerantes,
         pdfs_encontrados=catalogo.pdfs_encontrados,
     )
     recorte.campos_data = [c for c in catalogo.campos_data if c in recorte.vocabulario]
+    return recorte
+
+
+def subcatalogo(catalogo: Catalogo, grupo: GrupoTipo) -> Catalogo:
+    """O catálogo restrito a um dos tipos principais, com os índices dele."""
+    recorte = _recorte(catalogo, grupo.documentos, grupo.vocabulario)
+    recorte.tipo_ativo = grupo.rotulo
+    return recorte
+
+
+def subcatalogo_por_indices(catalogo: Catalogo, indices: list[str]) -> Catalogo:
+    """O catálogo em "outro tipo de documento", com os índices escolhidos.
+
+    Os índices escolhidos fazem duas coisas: viram os campos de busca e as
+    colunas, e definem quais documentos aparecem — os que têm ao menos um
+    deles preenchido. Assim, numa pasta que mistura despesas com
+    contratos, marcar "Contratado" e "Vigência" traz os contratos, sem
+    arrastar junto as despesas, que não têm esses campos.
+    """
+    escolhidos = [c for c in catalogo.vocabulario if c in set(indices)]
+    if escolhidos:
+        documentos = [
+            d for d in catalogo.documentos
+            if any(d.valor(c).strip() for c in escolhidos)
+        ]
+    else:
+        # Pasta sem índice nenhum (só PDFs soltos): mostra tudo, e a busca
+        # fica por conta do nome do arquivo e do conteúdo.
+        documentos = list(catalogo.documentos)
+    recorte = _recorte(catalogo, documentos, escolhidos)
+    recorte.tipo_ativo = ROTULO_OUTRO
+    recorte.indices_escolhidos = escolhidos
     return recorte
 
 

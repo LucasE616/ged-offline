@@ -27,6 +27,8 @@ def _linhas_cabecalho(catalogo: Catalogo, criterios: Criterios) -> list[tuple[st
     ]
     if catalogo.tipo_ativo:
         linhas.append(("Tipo", catalogo.tipo_ativo))
+    if catalogo.indices_escolhidos:
+        linhas.append(("Índices", ", ".join(catalogo.indices_escolhidos)))
     linhas.append(("Escopo", criterios.escopos_descritos()))
     return linhas
 

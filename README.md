@@ -26,9 +26,14 @@ Duplo clique numa linha abre o PDF no visualizador padrão do Windows. O botão 
 
 ## Tipo de documento
 
-Uma pasta de exercício costuma ter um tipo só, mas apontar para a raiz de um acervo mistura despesas com licitações — e os vocabulários se somam, enchendo a busca de campos que não valem para o que se procura. Quando isso acontece, o programa abre um diálogo mostrando os tipos encontrados, com quantos documentos, quantas páginas e quais índices cada um tem. Escolher um tipo reduz os campos de busca e as colunas aos índices daquele tipo; *Todos os tipos* mostra tudo somado. O botão **Tipo:** no topo permite trocar a qualquer momento.
+Toda vez que um diretório é lido, o programa pergunta qual tipo documental você vai consultar:
 
-O tipo é deduzido do nome do arquivo (`despesa_…`, `licitacao_…`) e, quando o nome não diz, do campo *Título* do próprio índice — que nos exports do acervo traz exatamente isso.
+- **Despesas**, **Licitações** ou **Legislações** — cada um mostra quantos documentos e páginas dele existem na pasta. Um tipo sem nenhum documento aparece apagado. O tipo com mais documentos já vem marcado, então confirmar é só apertar Enter.
+- **Outro tipo de documento** — para acervos de outra natureza. Você marca quais índices quer buscar; entre parênteses aparece em quantos documentos cada índice está preenchido. Os índices marcados viram os campos de busca e as colunas, e também definem quais documentos aparecem: os que têm ao menos um deles preenchido. Assim, numa pasta que mistura despesas com contratos, marcar os índices dos contratos traz só os contratos.
+
+O botão **Tipo:** no topo reabre a pergunta a qualquer momento, lembrando a escolha anterior.
+
+Para enquadrar cada documento, as pistas são tentadas da mais específica para a mais genérica: o padrão do nome do arquivo (`despesa_…`, `licitacao_…`), depois o campo *Título* do índice, depois o nome das pastas entre o documento e o diretório escolhido. Pastas acima do diretório escolhido não contam, e palavras curtas precisam aparecer inteiras — "Leilão", que é modalidade de licitação, não é confundido com lei.
 
 ## Datas e períodos
 
@@ -89,7 +94,8 @@ python main.py --buscar "D:\ACERVO\2019" --filtro "Favorecido=CEMIG" --txt relat
 ```
 
 Opções: `--termo`, `--filtro CAMPO=VALOR` (repetível), `--conteudo`,
-`--tipo`, `--indice-de`, `--indice-ate`, `--criacao-de`, `--criacao-ate`,
+`--tipo despesa|licitacao|legislacao|outro`, `--indices "A,B"` (com `--tipo outro`),
+`--indice-de`, `--indice-ate`, `--criacao-de`, `--criacao-ate`,
 `--sem-subpastas`, `--csv`, `--txt`, `--limite`.
 
 ## Exportação

@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -48,14 +49,42 @@ def abrir_arquivo(caminho: str) -> None:
         messagebox.showerror("Erro ao abrir o arquivo", str(exc))
 
 
+def comando_explorer(caminho: str) -> str:
+    """Linha de comando que abre o Explorer com o arquivo selecionado.
+
+    Precisa ser montada à mão. Passando uma lista de argumentos, o Python
+    envolve o argumento inteiro em aspas quando o caminho tem espaço —
+    "/select,C:\\Users\\Lucas Emanuel\\...pdf" — e o Explorer, que só
+    entende /select,"C:\\...pdf", ignora a instrução e abre Documentos.
+    """
+    return f'explorer /select,"{os.path.normpath(caminho)}"'
+
+
 def abrir_pasta_do_arquivo(caminho: str) -> None:
     """Abre o gerenciador de arquivos já com o documento selecionado."""
-    alvo = Path(caminho)
+    alvo = Path(os.path.normpath(caminho))
+    if not alvo.exists():
+        # Sem o arquivo, o /select do Explorer falha em silêncio e abre
+        # Documentos — justamente o sintoma de "levou para o lugar errado".
+        if alvo.parent.exists():
+            messagebox.showinfo(
+                "Arquivo não encontrado",
+                f"O arquivo não está mais neste caminho:\n{alvo}\n\n"
+                "Vou abrir a pasta onde ele deveria estar.",
+            )
+            abrir_arquivo(str(alvo.parent))
+        else:
+            messagebox.showwarning(
+                "Pasta não encontrada",
+                f"A pasta deste documento não está acessível:\n{alvo.parent}\n\n"
+                "Se o acervo está num HD externo, confira se ele está conectado.",
+            )
+        return
     try:
         if sys.platform.startswith("win"):
             # O explorer devolve código 1 mesmo quando funciona, então o
             # resultado não é conferido de propósito.
-            subprocess.run(["explorer", f"/select,{alvo}"], check=False)
+            subprocess.run(comando_explorer(str(alvo)), check=False)
         elif sys.platform == "darwin":
             subprocess.run(["open", "-R", str(alvo)], check=False)
         else:
@@ -108,76 +137,177 @@ class AreaRolavel(ttk.Frame):
             self.tela.yview_scroll(-1 * (evento.delta // 120), "units")
 
 
-class DialogoTipo(tk.Toplevel):
-    """Escolha do tipo de documento a consultar.
+@dataclass
+class Escolha:
+    """O que o usuário decidiu no diálogo de tipo."""
 
-    Uma pasta costuma ter um tipo só, mas apontar para a raiz de um acervo
-    mistura despesas com licitações e soma os vocabulários, enchendo a
-    busca de campos que não valem para o que se procura. Aqui se escolhe o
-    tipo e, com ele, o conjunto de índices.
+    chave: str  # "despesa", "licitacao", "legislacao" ou "outro"
+    indices: list[str] = field(default_factory=list)  # só em "outro"
+
+
+class DialogoTipo(tk.Toplevel):
+    """Pergunta qual tipo documental consultar.
+
+    Mostra sempre os três tipos principais — Despesas, Licitações e
+    Legislações —, cada um com quantos documentos dele existem na pasta, e
+    a opção "Outro tipo de documento", em que o próprio usuário escolhe
+    quais índices quer buscar.
     """
 
-    def __init__(self, master, grupos: list[cat.GrupoTipo], ativo: str = "") -> None:
+    def __init__(
+        self,
+        master,
+        grupos: list[cat.GrupoTipo],
+        sem_tipo: int,
+        contagem: dict[str, int],
+        atual: Escolha,
+    ) -> None:
         super().__init__(master)
         self.title("Tipo de documento")
         self.resizable(False, False)
-        self.escolha: cat.GrupoTipo | None = None
-        self._grupos = grupos
+        self.escolha: Escolha | None = None
+        self._contagem = contagem
 
-        corpo = ttk.Frame(self, padding=14)
+        corpo = ttk.Frame(self, padding=(16, 14))
         corpo.pack(fill="both", expand=True)
 
+        ttk.Label(corpo, text="Qual tipo de documento você vai consultar?", font=("", 11, "bold")).pack(anchor="w")
         ttk.Label(
             corpo,
-            text="Este diretório tem mais de um tipo de documento.\n"
-            "Escolha qual consultar — os campos de busca serão os índices desse tipo.",
-            justify="left",
-        ).pack(anchor="w", pady=(0, 10))
+            text="Os campos de busca e as colunas da tabela serão os índices do tipo escolhido.",
+            foreground="#555",
+        ).pack(anchor="w", pady=(2, 12))
 
-        self.var_escolha = tk.StringVar(value=ativo or grupos[0].rotulo)
+        self.var_tipo = tk.StringVar(value=atual.chave)
 
         for grupo in grupos:
-            texto = (
-                f"{grupo.rotulo}  —  {formatar_inteiro(grupo.total_documentos)} documento(s), "
-                f"{formatar_inteiro(grupo.total_paginas)} página(s), "
-                f"{len(grupo.vocabulario)} índice(s)"
-            )
-            ttk.Radiobutton(corpo, text=texto, value=grupo.rotulo, variable=self.var_escolha).pack(
-                anchor="w", pady=1
-            )
-            ttk.Label(
+            vazio = grupo.total_documentos == 0
+            if vazio:
+                detalhe = "nenhum documento deste tipo nesta pasta"
+            else:
+                detalhe = (
+                    f"{formatar_inteiro(grupo.total_documentos)} documento(s) · "
+                    f"{formatar_inteiro(grupo.total_paginas)} página(s)"
+                )
+            ttk.Radiobutton(
                 corpo,
-                text="      " + (", ".join(grupo.vocabulario[:8]) or "(sem índices)")
-                + ("..." if len(grupo.vocabulario) > 8 else ""),
-                foreground="#777",
-                font=("", 8),
-            ).pack(anchor="w", pady=(0, 6))
+                text=f"{grupo.rotulo}   —   {detalhe}",
+                value=grupo.chave,
+                variable=self.var_tipo,
+                command=self._ao_trocar,
+                state="disabled" if vazio else "normal",
+            ).pack(anchor="w", pady=(2, 0))
+            if not vazio:
+                indices = ", ".join(grupo.vocabulario[:7]) + ("..." if len(grupo.vocabulario) > 7 else "")
+                ttk.Label(
+                    corpo, text=f"        índices: {indices or '(nenhum)'}", foreground="#777", font=("", 8)
+                ).pack(anchor="w")
 
-        ttk.Separator(corpo).pack(fill="x", pady=6)
+        ttk.Separator(corpo).pack(fill="x", pady=10)
+
         ttk.Radiobutton(
             corpo,
-            text="Todos os tipos  —  mostra tudo, com os índices somados",
-            value="",
-            variable=self.var_escolha,
+            text=f"{cat.ROTULO_OUTRO}   —   escolher os índices",
+            value=cat.TIPO_OUTRO,
+            variable=self.var_tipo,
+            command=self._ao_trocar,
         ).pack(anchor="w")
+        if sem_tipo:
+            ttk.Label(
+                corpo,
+                text=f"        {formatar_inteiro(sem_tipo)} documento(s) desta pasta não se encaixam nos três tipos acima",
+                foreground="#8F6223",
+                font=("", 8),
+            ).pack(anchor="w")
+
+        self.quadro_indices = ttk.Frame(corpo, padding=(22, 6, 0, 0))
+        self.quadro_indices.pack(fill="x")
+
+        self._marcas: dict[str, tk.BooleanVar] = {}
+        self._caixas: list[ttk.Checkbutton] = []
+        # Índices vazios em todos os documentos ficam de fora: marcá-los
+        # não traria documento nenhum, e só confundiriam a escolha.
+        uteis = [campo for campo, quantos in contagem.items() if quantos > 0]
+        if uteis:
+            area = AreaRolavel(self.quadro_indices, altura_max=150)
+            area.pack(fill="x")
+            for i, campo in enumerate(uteis):
+                var = tk.BooleanVar(value=campo in atual.indices)
+                self._marcas[campo] = var
+                caixa = ttk.Checkbutton(
+                    area.interno, text=f"{campo} ({formatar_inteiro(contagem[campo])})", variable=var
+                )
+                caixa.grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 18), pady=1)
+                self._caixas.append(caixa)
+            area._ajustar_altura()
+
+            atalhos = ttk.Frame(self.quadro_indices)
+            atalhos.pack(fill="x", pady=(4, 0))
+            self._botao_todos = ttk.Button(atalhos, text="Marcar todos", command=lambda: self._marcar(True))
+            self._botao_todos.pack(side="left")
+            self._botao_nenhum = ttk.Button(atalhos, text="Desmarcar todos", command=lambda: self._marcar(False))
+            self._botao_nenhum.pack(side="left", padx=6)
+            ttk.Label(
+                self.quadro_indices,
+                text="Entre parênteses, em quantos documentos o índice está preenchido. Serão listados\n"
+                "os documentos que têm ao menos um dos índices marcados.",
+                foreground="#777",
+                font=("", 8),
+                justify="left",
+            ).pack(anchor="w", pady=(4, 0))
+        else:
+            ttk.Label(
+                self.quadro_indices,
+                text="Nenhum índice XML nesta pasta — todos os documentos serão listados, e a busca\n"
+                "fica por conta do nome do arquivo e do conteúdo do PDF.",
+                foreground="#777",
+                font=("", 8),
+                justify="left",
+            ).pack(anchor="w")
 
         botoes = ttk.Frame(corpo)
-        botoes.pack(fill="x", pady=(14, 0))
+        botoes.pack(fill="x", pady=(16, 0))
         ttk.Button(botoes, text="Confirmar", command=self._confirmar).pack(side="right")
         ttk.Button(botoes, text="Cancelar", command=self.destroy).pack(side="right", padx=6)
 
+        self._ao_trocar()
         self.transient(master)
         self.grab_set()
         self.bind("<Return>", lambda _e: self._confirmar())
         self.bind("<Escape>", lambda _e: self.destroy())
         self.update_idletasks()
         x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
-        y = master.winfo_rooty() + 90
+        y = master.winfo_rooty() + 40
         self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
 
+    def _ao_trocar(self) -> None:
+        """A lista de índices só vale para "outro tipo"; fica apagada nos demais."""
+        estado = "normal" if self.var_tipo.get() == cat.TIPO_OUTRO else "disabled"
+        for caixa in self._caixas:
+            caixa.configure(state=estado)
+        if self._caixas:
+            self._botao_todos.configure(state=estado)
+            self._botao_nenhum.configure(state=estado)
+
+    def _marcar(self, valor: bool) -> None:
+        for var in self._marcas.values():
+            var.set(valor)
+
     def _confirmar(self) -> None:
-        rotulo = self.var_escolha.get()
-        self.escolha = next((g for g in self._grupos if g.rotulo == rotulo), None)
+        chave = self.var_tipo.get()
+        if chave != cat.TIPO_OUTRO:
+            self.escolha = Escolha(chave=chave)
+            self.destroy()
+            return
+        indices = [campo for campo, var in self._marcas.items() if var.get()]
+        if self._marcas and not indices:
+            messagebox.showwarning(
+                "Escolha os índices",
+                "Marque pelo menos um índice para buscar neste tipo de documento.",
+                parent=self,
+            )
+            return
+        self.escolha = Escolha(chave=cat.TIPO_OUTRO, indices=indices)
         self.destroy()
 
 
@@ -190,6 +320,9 @@ class App(tk.Tk):
         self.catalogo_completo: cat.Catalogo | None = None
         self.catalogo: cat.Catalogo | None = None
         self.grupos: list[cat.GrupoTipo] = []
+        self.sem_tipo = 0
+        self.contagem_indices: dict[str, int] = {}
+        self.escolha: Escolha | None = None
         self.cache = cont.CacheConteudo()
         self.resultado = None
         self.criterios_do_resultado = Criterios()
@@ -402,23 +535,44 @@ class App(tk.Tk):
         self._rodar(tarefa)
 
     # ------------------------------------------------------------ tipos
-    def _escolher_tipo(self, automatico: bool = False) -> None:
-        if not self.grupos:
-            return
-        ativo = self.catalogo.tipo_ativo if self.catalogo else ""
-        dialogo = DialogoTipo(self, self.grupos, ativo)
-        self.wait_window(dialogo)
-        if dialogo.escolha is None and not automatico:
-            return  # cancelou: mantém a visão atual
-        self._aplicar_tipo(dialogo.escolha)
+    def _escolha_padrao(self) -> Escolha:
+        """O tipo pré-marcado no diálogo: o que tem mais documentos na pasta."""
+        com_documentos = [g for g in self.grupos if g.total_documentos]
+        if com_documentos:
+            maior = max(com_documentos, key=lambda g: g.total_documentos)
+            return Escolha(chave=maior.chave)
+        return Escolha(chave=cat.TIPO_OUTRO)
 
-    def _aplicar_tipo(self, grupo: cat.GrupoTipo | None) -> None:
+    def _escolher_tipo(self, automatico: bool = False) -> None:
         if self.catalogo_completo is None:
             return
-        if grupo is None:
-            self.catalogo = self.catalogo_completo
-            self.botao_tipo.configure(text="Tipo: todos")
+        atual = self.escolha or self._escolha_padrao()
+        dialogo = DialogoTipo(self, self.grupos, self.sem_tipo, self.contagem_indices, atual)
+        self.wait_window(dialogo)
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return  # a janela principal foi fechada com o diálogo aberto
+        if dialogo.escolha is None:
+            if not automatico:
+                return  # cancelou uma troca: mantém a visão atual
+            # Cancelou a pergunta inicial: segue com o tipo pré-marcado,
+            # para a tela não ficar vazia.
+            self._aplicar_escolha(atual)
+            return
+        self._aplicar_escolha(dialogo.escolha)
+
+    def _aplicar_escolha(self, escolha: Escolha) -> None:
+        if self.catalogo_completo is None:
+            return
+        self.escolha = escolha
+        if escolha.chave == cat.TIPO_OUTRO:
+            self.catalogo = cat.subcatalogo_por_indices(self.catalogo_completo, escolha.indices)
+            quantos = len(self.catalogo.indices_escolhidos)
+            self.botao_tipo.configure(text=f"Tipo: Outro ({quantos} índice{'s' if quantos != 1 else ''})")
         else:
+            grupo = next(g for g in self.grupos if g.chave == escolha.chave)
             self.catalogo = cat.subcatalogo(self.catalogo_completo, grupo)
             self.botao_tipo.configure(text=f"Tipo: {grupo.rotulo}")
         self._montar_filtros()
@@ -483,15 +637,15 @@ class App(tk.Tk):
         self._terminar_trabalho()
         if rotulo == "catalogo":
             self.catalogo_completo = carga
-            self.grupos = cat.agrupar_por_tipo(carga)
-            self.botao_tipo.configure(state="normal" if self.grupos else "disabled")
+            self.grupos, self.sem_tipo = cat.agrupar_por_tipo(carga)
+            self.contagem_indices = cat.contagem_por_indice(carga)
+            self.escolha = None  # pasta nova: a escolha anterior não vale mais
+            self.botao_tipo.configure(state="normal")
             self.botao_precarregar.configure(state="normal" if cont.DISPONIVEL else "disabled")
-            if len(self.grupos) > 1:
-                # Mais de um tipo na mesma pasta: perguntar é melhor do que
-                # somar vocabulários e encher a busca de campos inúteis.
-                self._escolher_tipo(automatico=True)
-            else:
-                self._aplicar_tipo(self.grupos[0] if self.grupos else None)
+            # A pergunta aparece sempre, com o tipo mais provável já marcado:
+            # confirmar é um Enter, e o usuário nunca fica sem saber qual
+            # conjunto de índices está usando.
+            self._escolher_tipo(automatico=True)
             self._contar_paginas_em_segundo_plano()
         elif rotulo == "busca":
             self.resultado = carga

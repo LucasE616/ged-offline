@@ -58,21 +58,35 @@ def _cli(args: argparse.Namespace) -> None:
     if catalogo.campos_data:
         print(f"  Campos de data reconhecidos: {', '.join(catalogo.campos_data)}")
 
-    grupos = cat.agrupar_por_tipo(catalogo)
+    grupos, sem_tipo = cat.agrupar_por_tipo(catalogo)
+    print("  Tipos: " + ", ".join(f"{g.rotulo} ({g.total_documentos})" for g in grupos)
+          + (f", outros ({sem_tipo})" if sem_tipo else ""))
+
     if args.tipo:
-        escolhido = next(
-            (g for g in grupos if g.rotulo.lower() == args.tipo.lower()), None
-        )
-        if escolhido is None:
-            print(f"\nTipo '{args.tipo}' não encontrado. Disponíveis: "
-                  + ", ".join(g.rotulo for g in grupos))
-            return
-        catalogo = cat.subcatalogo(catalogo, escolhido)
-        print(f"  Tipo selecionado: {escolhido.rotulo} ({len(catalogo.vocabulario)} índices)")
-    elif len(grupos) > 1:
-        print("  Tipos presentes: " + ", ".join(
-            f"{g.rotulo} ({g.total_documentos})" for g in grupos
-        ) + "  — use --tipo para restringir")
+        from ged.texto import normalizar
+
+        pedido = normalizar(args.tipo)
+        if pedido.startswith("outro"):
+            indices = [i.strip() for i in (args.indices or "").split(",") if i.strip()]
+            desconhecidos = [i for i in indices if i not in catalogo.vocabulario]
+            if desconhecidos:
+                print(f"\nÍndice(s) não encontrado(s): {', '.join(desconhecidos)}")
+                return
+            catalogo = cat.subcatalogo_por_indices(catalogo, indices)
+            print(f"  Tipo selecionado: {cat.ROTULO_OUTRO} — índices: "
+                  f"{', '.join(catalogo.indices_escolhidos) or '(todos os documentos)'}")
+        else:
+            escolhido = next(
+                (g for g in grupos if pedido in (normalizar(g.chave), normalizar(g.rotulo))
+                 or normalizar(g.rotulo).startswith(pedido)),
+                None,
+            )
+            if escolhido is None:
+                print(f"\nTipo '{args.tipo}' não reconhecido. Use despesa, licitacao, "
+                      "legislacao ou outro (com --indices).")
+                return
+            catalogo = cat.subcatalogo(catalogo, escolhido)
+            print(f"  Tipo selecionado: {escolhido.rotulo} ({len(catalogo.vocabulario)} índices)")
 
     criterios = Criterios(
         termo=args.termo or "",
@@ -109,7 +123,8 @@ def main() -> None:
     parser.add_argument("--termo", help="Texto livre a procurar.")
     parser.add_argument("--filtro", action="append", metavar="CAMPO=VALOR", help="Filtro por campo de índice (repetível).")
     parser.add_argument("--conteudo", action="store_true", help="Procurar também dentro do texto dos PDFs.")
-    parser.add_argument("--tipo", help="Restringir a um tipo de documento (ex.: Despesa).")
+    parser.add_argument("--tipo", help="despesa, licitacao, legislacao ou outro.")
+    parser.add_argument("--indices", help='Com --tipo outro: índices a buscar, separados por vírgula ("Favorecido,Valor").')
     parser.add_argument("--indice-de", help="Início do período sobre a data do índice (2019, 11/2019, 29/11/2019).")
     parser.add_argument("--indice-ate", help="Fim do período sobre a data do índice.")
     parser.add_argument("--criacao-de", help="Início do período sobre a data de criação do arquivo.")
